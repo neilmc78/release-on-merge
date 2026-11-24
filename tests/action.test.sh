@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Expected notes are single-quoted on purpose: they contain literal backticks.
+# shellcheck disable=SC2016
 # Runs action.yml's release step in throwaway repositories, each with a local
 # bare "origin" so the tag push is real, and a stand-in gh that records the
 # release it was asked to create. Needs python3 with PyYAML.
