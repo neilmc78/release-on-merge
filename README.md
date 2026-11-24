@@ -48,6 +48,7 @@ The full list a person or an agent needs to add this to a repository:
    - **`paths-ignore`** for changes that shouldn't make a release, such as `**.md`, `docs/**` and `.github/**`.
    - **Permissions:** `contents: write`, plus `packages: write` if it publishes images.
    - **Concurrency:** `concurrency: { group: release, cancel-in-progress: false }`, so two quick merges are numbered one after the other.
+   - **Your repository only:** guard the release job with `if: github.repository == 'owner/repo'`, so forks that sync your `main` and enable Actions don't make releases of their own.
 2. **Full history.** Check out with `fetch-depth: 0` before the action. With a shallow checkout the earlier tags are invisible, so the action stops with an error.
 3. **Builds run from the release workflow, after the action.** Gate them on `needs.<job>.outputs.tag != ''` (or `released == 'true'`), and check out the tag before building. A tag pushed with the workflow's own token **does not start other workflows**, so a separate workflow listening for `push: tags` never runs. Either build in the same workflow, as in `release-binaries-only.yml`, or make the existing build workflows callable (below).
 4. **Version anything that embeds one.** If a build bakes a version into its output, such as a manifest or `-ldflags`, set it from the tag (`${TAG#v}`) so the shipped file reports the release's version.
