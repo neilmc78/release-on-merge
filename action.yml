@@ -104,10 +104,9 @@ runs:
         next=${versions%% *}
         previous=${versions#* }
 
-        # The pull request's title: the given title, or the third line of a
-        # merge commit, otherwise the commit's first line (squash merges use
-        # the title).
-        title=${TITLE:-$(git log -1 --format=%B | awk 'NR == 1 && /^Merge pull request/ { merge = 1; next } merge && NF { print; exit } !merge { print; exit }')}
+        # The pull request's title (next-version.sh --title), the same text
+        # that decided the bump, without the [minor] or [major] keyword.
+        title=$("$NEXT_VERSION" --title)
         title=$(printf '%s' "$title" | sed -E 's/\[(minor|major)\][[:space:]]*//g')
 
         notes=$(mktemp)

@@ -3,16 +3,33 @@
 # the commit at HEAD. PREVIOUS is empty for a repository's first release.
 #
 # The next release bumps the patch number of the highest vX.Y.Z tag. A
-# "[minor]" or "[major]" in the release message bumps that part instead. The
-# message is HEAD's commit message (GitHub puts the pull request's title
-# there when it merges), or RELEASE_MESSAGE when that is set, as it is for a
-# pull request that hasn't been merged yet.
+# "[minor]" or "[major]" in the release title bumps that part instead. Only
+# the title counts, never a pull request's description that GitHub may also
+# put in the merge commit. "next-version.sh --title" prints the title: the
+# pull request's title from HEAD's merge commit, or the first line of
+# RELEASE_MESSAGE when that is set, as it is for a pull request that hasn't
+# been merged yet.
 # Pre-release tags (v1.0.0-rc1) and malformed ones (v.0.2.0) are ignored.
 #
 # Prints nothing when HEAD is already released, so re-running a release does
 # not make a second one. "next-version.sh --released" prints the tag HEAD was
 # released as instead, or nothing.
 set -euo pipefail
+
+# release_title prints the pull request's title: the first non-empty line
+# after "Merge pull request ..." in a merge commit, otherwise the first line
+# (squash merges, and merge commits titled from the pull request), without a
+# trailing " (#123)".
+release_title() {
+  local message title
+  if [[ -n "${RELEASE_MESSAGE:-}" ]]; then
+    message=$RELEASE_MESSAGE
+  else
+    message=$(git log -1 --format=%B HEAD)
+  fi
+  title=$(printf '%s\n' "$message" | awk 'NR == 1 && /^Merge pull request/ { merge = 1; next } merge && NF { print; exit } !merge { print; exit }')
+  printf '%s\n' "$title" | sed -E 's/[[:space:]]+\(#[0-9]+\)$//'
+}
 
 release_tags() { git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; }
 
@@ -33,6 +50,11 @@ released_as() {
   done
 }
 
+if [[ "${1:-}" == "--title" ]]; then
+  release_title
+  exit 0
+fi
+
 released=$(released_as)
 if [[ "${1:-}" == "--released" ]]; then
   echo "$released"
@@ -50,10 +72,10 @@ else
   IFS=. read -r major minor patch <<< "${previous#v}"
 fi
 
-message=${RELEASE_MESSAGE:-$(git log -1 --format=%B HEAD)}
-if [[ "$message" == *"[major]"* ]]; then
+title=$(release_title)
+if [[ "$title" == *"[major]"* ]]; then
   major=$((major + 1)) minor=0 patch=0
-elif [[ "$message" == *"[minor]"* ]]; then
+elif [[ "$title" == *"[minor]"* ]]; then
   minor=$((minor + 1)) patch=0
 else
   patch=$((patch + 1))
