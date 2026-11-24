@@ -1,0 +1,59 @@
+# Release every merge to main, then build the release's binaries and image by
+# calling this repository's own build workflows (Siloscope's setup).
+#
+# Copy to .github/workflows/release.yml. Each called workflow needs a
+# workflow_call trigger with a "tag" input and must check out that tag; see
+# "Turn a build workflow into a callable one" in the README.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: # changes that need no new release
+      - "**.md"
+      - "docs/**"
+      - ".github/**"
+  workflow_dispatch: # release main by hand, or retry
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: release
+        uses: neilmc78/release-on-merge@v1
+        with:
+          components: |
+            silo-plugin: Silo plugin
+          extra-notes: "**Docker:** `ghcr.io/${{ github.repository_owner }}/my-image:latest`"
+
+  binaries:
+    needs: tag
+    if: needs.tag.outputs.tag != ''
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-binaries.yml
+    with:
+      tag: ${{ needs.tag.outputs.tag }}
+
+  container:
+    needs: tag
+    if: needs.tag.outputs.tag != ''
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/publish-container.yml
+    with:
+      tag: ${{ needs.tag.outputs.tag }}

@@ -1,0 +1,98 @@
+name: Release on merge
+description: >-
+  Tags the current commit with the next semantic version and creates a GitHub
+  release titled with the pull request's title. Patch by default; [minor] or
+  [major] in the pull request's title bumps that part instead.
+author: neilmc78
+branding:
+  icon: tag
+  color: green
+
+inputs:
+  components:
+    description: >-
+      Optional lines of "path: Label". For each one the release notes say
+      whether that path changed since the previous release, for example
+      "silo-plugin: Silo plugin".
+    required: false
+    default: ""
+  extra-notes:
+    description: Optional markdown added to the top of the release notes.
+    required: false
+    default: ""
+  token:
+    description: >-
+      Token that pushes the tag and creates the release. Needs contents: write.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  released:
+    description: '"true" when a release was created, "false" when the commit was already released.'
+    value: ${{ steps.release.outputs.released }}
+  tag:
+    description: The new tag, such as v1.4.2. Empty when nothing was released.
+    value: ${{ steps.release.outputs.tag }}
+  previous:
+    description: The previous release's tag. Empty for a repository's first release.
+    value: ${{ steps.release.outputs.previous }}
+
+runs:
+  using: composite
+  steps:
+    - id: release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        COMPONENTS: ${{ inputs.components }}
+        EXTRA_NOTES: ${{ inputs.extra-notes }}
+        NEXT_VERSION: ${{ github.action_path }}/next-version.sh
+      run: |
+        set -euo pipefail
+        if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+          echo "::error::Check out with fetch-depth: 0, so earlier release tags are visible."
+          exit 1
+        fi
+
+        versions=$("$NEXT_VERSION")
+        if [ -z "$versions" ]; then
+          echo "This commit is already released."
+          { echo "released=false"; echo "tag="; echo "previous="; } >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        next=${versions%% *}
+        previous=${versions#* }
+
+        # The pull request's title: the third line of a merge commit,
+        # otherwise the commit's first line (squash merges use the title).
+        title=$(git log -1 --format=%B | awk 'NR == 1 && /^Merge pull request/ { merge = 1; next } merge && NF { print; exit } !merge { print; exit }')
+        title=$(printf '%s' "$title" | sed -E 's/\[(minor|major)\][[:space:]]*//g')
+
+        notes=$(mktemp)
+        while IFS= read -r line; do
+          [ -n "${line//[[:space:]]/}" ] || continue
+          trim() { local value=$1; value=${value#"${value%%[![:space:]]*}"}; printf '%s' "${value%"${value##*[![:space:]]}"}"; }
+          path=$(trim "${line%%:*}")
+          label=$path
+          if [[ "$line" == *:* ]]; then label=$(trim "${line#*:}"); fi
+          [ -n "$label" ] || label=$path
+          if [ -n "$previous" ] && git diff --quiet "$previous" HEAD -- "$path"; then
+            echo "**$label:** unchanged since $previous." >> "$notes"
+          else
+            echo "**$label:** updated in this release." >> "$notes"
+          fi
+        done <<< "$COMPONENTS"
+        if [ -n "$EXTRA_NOTES" ]; then
+          [ -s "$notes" ] && echo >> "$notes"
+          printf '%s\n' "$EXTRA_NOTES" >> "$notes"
+        fi
+
+        git tag "$next"
+        git push origin "refs/tags/$next"
+        if [ -s "$notes" ]; then
+          gh release create "$next" --title "$next — $title" --notes-file "$notes" --generate-notes
+        else
+          gh release create "$next" --title "$next — $title" --generate-notes
+        fi
+        { echo "released=true"; echo "tag=$next"; echo "previous=$previous"; } >> "$GITHUB_OUTPUT"
+        echo "Released $next${previous:+ (previous $previous)}."

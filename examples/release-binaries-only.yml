@@ -1,0 +1,70 @@
+# Release every merge to main and attach Linux binaries built from it, all in
+# one workflow (for example a Silo plugin repository).
+#
+# Copy to .github/workflows/release.yml and change the build step.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".github/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: release
+        uses: neilmc78/release-on-merge@v1
+
+  build:
+    needs: tag
+    if: needs.tag.outputs.tag != ''
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Optional: give an embedded manifest the release's version, so the
+      # built program reports the same version as the release.
+      - name: Stamp the version
+        run: |
+          if [ -f manifest.json ]; then
+            jq --arg v "${TAG#v}" '.version = $v' manifest.json > manifest.tmp && mv manifest.tmp manifest.json
+          fi
+
+      - name: Test and build
+        run: |
+          go test ./...
+          mkdir dist
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags="-s -w" -o "dist/${{ github.event.repository.name }}-linux-$arch" .
+          done
+          (cd dist && sha256sum * > SHA256SUMS)
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist/* --clobber
