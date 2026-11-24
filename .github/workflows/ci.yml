@@ -16,6 +16,14 @@ jobs:
         run: |
           python3 -m pip install --quiet pyyaml
           bash tests/action.test.sh
+          bash tests/pr-screenshots.test.sh
+      - name: Shellcheck the scripts and the actions' steps
+        run: |
+          shellcheck next-version.sh tests/*.sh
+          for action in action.yml pr-screenshots/action.yml; do
+            python3 -c 'import sys, yaml; print("#!/usr/bin/env bash\n" + yaml.safe_load(open(sys.argv[1]))["runs"]["steps"][0]["run"])' "$action" > step.sh
+            echo "$action"; shellcheck step.sh
+          done
       - name: Lint workflows and examples
         run: |
           bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7

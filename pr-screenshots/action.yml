@@ -1,0 +1,121 @@
+name: PR screenshots
+description: >-
+  Shows a pull request's screenshots inline in one comment that's updated on
+  every run. The images are published to a branch (one commit, latest images
+  per pull request) because GitHub can't attach images to comments through
+  its API.
+author: neilmc78
+branding:
+  icon: image
+  color: green
+
+inputs:
+  path:
+    description: Directory holding the images (.png, .jpg, .jpeg, .gif, .webp). Nothing is posted when it has none.
+    required: true
+  branch:
+    description: Branch the images are published to. It's rewritten as a single commit on every run.
+    required: false
+    default: screenshots
+  heading:
+    description: The comment's heading. The run number and the pull request's commit are added after it.
+    required: false
+    default: UI screenshots
+  width:
+    description: Width of each image in the comment, in pixels.
+    required: false
+    default: "240"
+  id:
+    description: >-
+      Names this set of screenshots, so a pull request can have more than one
+      comment, such as "phone" and "tablet". Also the folder name suffix on the
+      branch.
+    required: false
+    default: screenshots
+  pull-request:
+    description: The pull request's number.
+    required: false
+    default: ${{ github.event.pull_request.number }}
+  sha:
+    description: The commit the screenshots are of, shown in the heading.
+    required: false
+    default: ${{ github.event.pull_request.head.sha }}
+  token:
+    description: Needs contents and pull-requests write.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  commit:
+    description: The branch commit the images were published in. Empty when there were none.
+    value: ${{ steps.publish.outputs.commit }}
+
+runs:
+  using: composite
+  steps:
+    - id: publish
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        IMAGE_DIR: ${{ inputs.path }}
+        BRANCH: ${{ inputs.branch }}
+        HEADING: ${{ inputs.heading }}
+        WIDTH: ${{ inputs.width }}
+        SET: ${{ inputs.id }}
+        PR: ${{ inputs.pull-request }}
+        SHA: ${{ inputs.sha }}
+        RUN: ${{ github.run_number }}
+        REPO: ${{ github.repository }}
+        SERVER: ${{ github.server_url }}
+      run: |
+        set -euo pipefail
+        if [ -z "$PR" ]; then echo "::error::No pull request number: run this on a pull_request event or pass pull-request."; exit 1; fi
+        mapfile -t images < <(find "$IMAGE_DIR" -maxdepth 1 -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.gif' -o -iname '*.webp' \) 2>/dev/null | sort -V)
+        if [ "${#images[@]}" -eq 0 ]; then echo "No screenshots in $IMAGE_DIR; nothing posted."; exit 0; fi
+
+        # The branch keeps one commit with the latest images for each pull
+        # request, so it doesn't grow with every run.
+        remote=${PR_SCREENSHOTS_REMOTE:-"https://x-access-token:${GH_TOKEN}@${SERVER#https://}/${REPO}.git"}
+        work=$(mktemp -d)
+        if git ls-remote --exit-code --heads "$remote" "$BRANCH" >/dev/null 2>&1; then
+          git clone -q --depth 1 --branch "$BRANCH" "$remote" "$work/pub"
+        else
+          git init -q -b "$BRANCH" "$work/pub"
+        fi
+        folder="pr-$PR"
+        [ "$SET" = screenshots ] || folder="pr-$PR-$SET"
+        rm -rf "${work:?}/pub/$folder"
+        mkdir -p "$work/pub/$folder"
+        cp "${images[@]}" "$work/pub/$folder/"
+        cd "$work/pub"
+        git add -A
+        git checkout -q --orphan fresh
+        git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+          commit -q -m "Screenshots (latest per pull request)"
+        git branch -q -M fresh "$BRANCH"
+        git push -q -f "$remote" "$BRANCH"
+        commit=$(git rev-parse HEAD)
+        cd - >/dev/null
+
+        marker="<!-- pr-screenshots:$SET -->"
+        {
+          echo "$marker"
+          echo "### $HEADING · run $RUN${SHA:+ · ${SHA:0:7}}"
+          echo
+          for image in "${images[@]}"; do
+            name=$(basename "$image")
+            echo "<img src=\"$SERVER/$REPO/blob/$commit/$folder/$name?raw=true\" width=\"$WIDTH\" alt=\"${name%.*}\" title=\"${name%.*}\">"
+          done
+        } > "$work/body.md"
+
+        existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+          --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" | head -1)
+        if [ -n "$existing" ]; then
+          gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F "body=@$work/body.md" >/dev/null
+          echo "Updated the screenshots comment on #$PR."
+        else
+          gh api -X POST "repos/$REPO/issues/$PR/comments" -F "body=@$work/body.md" >/dev/null
+          echo "Posted a screenshots comment on #$PR."
+        fi
+        echo "commit=$commit" >> "$GITHUB_OUTPUT"
+        rm -rf "$work"

@@ -25,6 +25,7 @@ concurrency:
 
 jobs:
   tag:
+    if: github.repository == 'owner/repo'   # forks build but never release
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.release.outputs.tag }}
