@@ -20,6 +20,27 @@ inputs:
     description: Optional markdown added to the top of the release notes.
     required: false
     default: ""
+  version-files:
+    description: >-
+      Optional JSON files, one per line, whose top-level "version" is set to
+      the new version (without the v) on the released commit, such as a
+      plugin's manifest.json. The change is committed on top of the merge as
+      "Release vX.Y.Z" and that commit is tagged; main itself isn't changed.
+    required: false
+    default: ""
+  title:
+    description: >-
+      The release title and the text searched for [minor] or [major]. Defaults
+      to the merged pull request's title. Set it to the pull request's title
+      for a dry run on an unmerged pull request.
+    required: false
+    default: ""
+  dry-run:
+    description: >-
+      "true" works out the version without tagging or releasing anything, for
+      example to version a pull request's preview build. Read-only.
+    required: false
+    default: "false"
   token:
     description: >-
       Token that pushes the tag and creates the release. Needs contents: write.
@@ -31,8 +52,13 @@ outputs:
     description: '"true" when a release was created, "false" when the commit was already released.'
     value: ${{ steps.release.outputs.released }}
   tag:
-    description: The new tag, such as v1.4.2. Empty when nothing was released.
+    description: >-
+      The new tag, such as v1.4.2. Empty when nothing was released. In a dry
+      run, the tag this commit would get, or already has.
     value: ${{ steps.release.outputs.tag }}
+  version:
+    description: The tag without its leading v, such as 1.4.2.
+    value: ${{ steps.release.outputs.version }}
   previous:
     description: The previous release's tag. Empty for a repository's first release.
     value: ${{ steps.release.outputs.previous }}
@@ -46,26 +72,42 @@ runs:
         GH_TOKEN: ${{ inputs.token }}
         COMPONENTS: ${{ inputs.components }}
         EXTRA_NOTES: ${{ inputs.extra-notes }}
+        VERSION_FILES: ${{ inputs.version-files }}
+        TITLE: ${{ inputs.title }}
+        DRY_RUN: ${{ inputs.dry-run }}
         NEXT_VERSION: ${{ github.action_path }}/next-version.sh
       run: |
         set -euo pipefail
+        COMPONENTS=${COMPONENTS:-} EXTRA_NOTES=${EXTRA_NOTES:-} VERSION_FILES=${VERSION_FILES:-} TITLE=${TITLE:-} DRY_RUN=${DRY_RUN:-false}
         if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
           echo "::error::Check out with fetch-depth: 0, so earlier release tags are visible."
           exit 1
         fi
 
+        # A given title also decides the bump, as the merge message would.
+        if [ -n "$TITLE" ]; then export RELEASE_MESSAGE=$TITLE; fi
+
+        if [ "$DRY_RUN" = true ]; then
+          tag=$("$NEXT_VERSION" --released)
+          if [ -z "$tag" ]; then versions=$("$NEXT_VERSION"); tag=${versions%% *}; previous=${versions#* }; else previous=""; fi
+          echo "Dry run: this commit would be released as $tag."
+          { echo "released=false"; echo "tag=$tag"; echo "version=${tag#v}"; echo "previous=$previous"; } >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
         versions=$("$NEXT_VERSION")
         if [ -z "$versions" ]; then
           echo "This commit is already released."
-          { echo "released=false"; echo "tag="; echo "previous="; } >> "$GITHUB_OUTPUT"
+          { echo "released=false"; echo "tag="; echo "version="; echo "previous="; } >> "$GITHUB_OUTPUT"
           exit 0
         fi
         next=${versions%% *}
         previous=${versions#* }
 
-        # The pull request's title: the third line of a merge commit,
-        # otherwise the commit's first line (squash merges use the title).
-        title=$(git log -1 --format=%B | awk 'NR == 1 && /^Merge pull request/ { merge = 1; next } merge && NF { print; exit } !merge { print; exit }')
+        # The pull request's title: the given title, or the third line of a
+        # merge commit, otherwise the commit's first line (squash merges use
+        # the title).
+        title=${TITLE:-$(git log -1 --format=%B | awk 'NR == 1 && /^Merge pull request/ { merge = 1; next } merge && NF { print; exit } !merge { print; exit }')}
         title=$(printf '%s' "$title" | sed -E 's/\[(minor|major)\][[:space:]]*//g')
 
         notes=$(mktemp)
@@ -87,6 +129,23 @@ runs:
           printf '%s\n' "$EXTRA_NOTES" >> "$notes"
         fi
 
+        # Stamp version files on a commit on top of the merge, and tag that.
+        # It's reachable through the tag, so main is left as it is.
+        stamped=false
+        while IFS= read -r file; do
+          file=${file#"${file%%[![:space:]]*}"}; file=${file%"${file##*[![:space:]]}"}
+          [ -n "$file" ] || continue
+          if [ ! -f "$file" ]; then echo "::error::version-files: $file doesn't exist"; exit 1; fi
+          jq --arg v "${next#v}" '.version = $v' "$file" > "$file.release-tmp" && mv "$file.release-tmp" "$file"
+          git add -- "$file"
+          stamped=true
+        done <<< "$VERSION_FILES"
+        if [ "$stamped" = true ]; then
+          git checkout -q --detach
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q --allow-empty -m "Release $next"
+        fi
+
         git tag "$next"
         git push origin "refs/tags/$next"
         if [ -s "$notes" ]; then
@@ -94,5 +153,5 @@ runs:
         else
           gh release create "$next" --title "$next — $title" --generate-notes
         fi
-        { echo "released=true"; echo "tag=$next"; echo "previous=$previous"; } >> "$GITHUB_OUTPUT"
+        { echo "released=true"; echo "tag=$next"; echo "version=${next#v}"; echo "previous=$previous"; } >> "$GITHUB_OUTPUT"
         echo "Released $next${previous:+ (previous $previous)}."

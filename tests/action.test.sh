@@ -40,10 +40,12 @@ new_repo() {
   git add -A; git commit -q -m "Initial commit"
 }
 
-# release COMPONENTS EXTRA: runs the step in the current repository.
+# release COMPONENTS EXTRA: runs the step in the current repository. Set
+# VERSION_FILES, TITLE or DRY_RUN on the call to pass those inputs too.
 release() {
   : > "$work/output"; : > "$work/gh.log"
   GITHUB_OUTPUT="$work/output" GH_LOG="$work/gh.log" COMPONENTS="$1" EXTRA_NOTES="$2" \
+    VERSION_FILES="${VERSION_FILES:-}" TITLE="${TITLE:-}" DRY_RUN="${DRY_RUN:-false}" \
     NEXT_VERSION="$root/next-version.sh" PATH="$work/bin:$PATH" bash "$work/step.sh" > "$work/run.log" 2>&1
 }
 
@@ -57,7 +59,7 @@ remote_tags() { git ls-remote --tags origin | awk '{print $2}' | sed 's#refs/tag
 
 new_repo
 release "" ""
-expect "first release: outputs" "$(outputs)" "released=true tag=v0.0.1 previous= "
+expect "first release: outputs" "$(outputs)" "released=true tag=v0.0.1 version=0.0.1 previous= "
 expect "first release: tag pushed" "$(remote_tags)" "v0.0.1 "
 expect "first release: title only" "$(gh_log)" "title: v0.0.1 — Initial commit|"
 
@@ -66,7 +68,7 @@ git tag v0.3.1
 echo b > web/file; git commit -qam "Change the web app"
 git commit -q --allow-empty -m $'Merge pull request #5 from someone/branch\n\nFix History times'
 release $'plugin: Silo plugin\n  web : Web app \n\n' '**Docker:** `ghcr.io/owner/image:latest`'
-expect "components and notes: outputs" "$(outputs)" "released=true tag=v0.3.2 previous=v0.3.1 "
+expect "components and notes: outputs" "$(outputs)" "released=true tag=v0.3.2 version=0.3.2 previous=v0.3.1 "
 expect "components and notes: release" "$(gh_log)" 'title: v0.3.2 — Fix History times|**Silo plugin:** unchanged since v0.3.1.|**Web app:** updated in this release.||**Docker:** `ghcr.io/owner/image:latest`|'
 
 new_repo
@@ -79,7 +81,7 @@ expect "[minor] with an apostrophe label" "$(gh_log)" "title: v0.4.0 — Add a C
 new_repo
 git tag v0.3.1
 release "plugin" ""
-expect "already released: outputs" "$(outputs)" "released=false tag= previous= "
+expect "already released: outputs" "$(outputs)" "released=false tag= version= previous= "
 expect "already released: nothing pushed" "$(remote_tags)" ""
 expect "already released: no release" "$(gh_log)" ""
 
@@ -90,5 +92,40 @@ git clone -q --depth 1 "file://$repo" "$shallow"
 cd "$shallow"
 if release "" ""; then status=0; else status=$?; fi
 expect "shallow checkout refused" "$status $(grep -c 'fetch-depth: 0' "$work/run.log")" "1 1"
+
+new_repo
+git tag v1.1.5
+echo '{"id":"plugin","version":"0.1.0"}' > manifest.json; git add manifest.json; git commit -qm "Add manifest"
+git commit -q --allow-empty -m $'Merge pull request #7 from someone/branch\n\nFix a thing'
+merge=$(git rev-parse HEAD)
+VERSION_FILES=$'manifest.json\n' release "" ""
+expect "version-files: outputs" "$(outputs)" "released=true tag=v1.1.6 version=1.1.6 previous=v1.1.5 "
+expect "version-files: tagged commit has the version" "$(git show v1.1.6:manifest.json)" '{
+  "id": "plugin",
+  "version": "1.1.6"
+}'
+expect "version-files: tag sits on a Release commit on top of the merge" "$(git log -1 --format='%s %P' v1.1.6)" "Release v1.1.6 $merge"
+expect "version-files: main is unchanged" "$(git rev-parse main)" "$merge"
+expect "version-files: title is the PR's" "$(gh_log)" "title: v1.1.6 — Fix a thing|"
+git checkout -q main
+VERSION_FILES=manifest.json release "" ""
+expect "version-files: a re-run makes no second release" "$(outputs)$(remote_tags)" "released=false tag= version= previous= v1.1.6 "
+
+new_repo
+git tag v0.1.0
+git commit -q --allow-empty -m "A change"
+if VERSION_FILES=missing.json release "" ""; then status=0; else status=$?; fi
+expect "version-files: a missing file fails" "$status $(grep -c "missing.json doesn't exist" "$work/run.log")" "1 1"
+
+new_repo
+git tag v0.3.3
+git commit -q --allow-empty -m "Work in progress"
+DRY_RUN=true release "" ""
+expect "dry run: next version, nothing pushed" "$(outputs)$(remote_tags)$(gh_log)" "released=false tag=v0.3.4 version=0.3.4 previous=v0.3.3 "
+DRY_RUN=true TITLE="[minor] New dashboard" release "" ""
+expect "dry run: a PR title's [minor] counts" "$(outputs)" "released=false tag=v0.4.0 version=0.4.0 previous=v0.3.3 "
+git tag v0.3.4
+DRY_RUN=true release "" ""
+expect "dry run: an already-released commit reports its tag" "$(outputs)" "released=false tag=v0.3.4 version=0.3.4 previous= "
 
 exit $failures
