@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The setup helpers below are called through eval, which shellcheck cannot see.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 # Tests next-version.sh against throwaway repositories: bash tests/next-version.test.sh
 set -euo pipefail
 script="$(cd "$(dirname "$0")/.." && pwd)/next-version.sh"
