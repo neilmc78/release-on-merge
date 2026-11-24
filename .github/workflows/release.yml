@@ -1,0 +1,39 @@
+name: Release
+
+# This action releases itself with itself. After each release the major tag
+# (v1) moves to it, so callers using @v1 get fixes and additions; a breaking
+# change is released with [major] in its pull request's title, which starts v2.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "examples/**"
+      - "tests/**"
+      - ".github/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: release
+        uses: ./
+      - name: Move the major version tag
+        if: steps.release.outputs.released == 'true'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          major=${TAG%%.*}
+          git tag -f "$major"
+          git push -f origin "refs/tags/$major"

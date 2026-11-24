@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version tests
+        run: bash tests/next-version.test.sh
+      - name: Action tests
+        run: |
+          python3 -m pip install --quiet pyyaml
+          bash tests/action.test.sh
+      - name: Lint workflows and examples
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+          # The Siloscope example calls build workflows that live in the caller's repository.
+          ./actionlint -color -ignore 'could not read reusable workflow file' \
+            .github/workflows/*.yml examples/*.yml
